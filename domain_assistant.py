@@ -266,6 +266,46 @@ class OpenAIGenerator:
         return answer
 
 
+class GeminiGenerator:
+    def __init__(self, max_output_tokens: int = 300) -> None:
+        from google import genai
+        from google.genai import types
+
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        self.model = os.getenv("GEMINI_MODEL", "").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is missing from .env")
+        if not self.model:
+            raise RuntimeError("GEMINI_MODEL is missing from .env")
+        self._types = types
+        self.client = genai.Client(api_key=api_key)
+        self.max_output_tokens = max_output_tokens
+
+    def generate(self, prompt: str) -> str:
+        from google.genai.errors import ClientError
+
+        for attempt in range(5):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=self._types.GenerateContentConfig(
+                        temperature=0,
+                        max_output_tokens=self.max_output_tokens,
+                    ),
+                )
+                break
+            except ClientError as exc:
+                if exc.code == 429 and attempt < 4:
+                    time.sleep(15)
+                    continue
+                raise
+        answer = (response.text or "").strip()
+        if not answer:
+            raise RuntimeError("Gemini returned an empty answer")
+        return answer
+
+
 @dataclass(frozen=True)
 class DomainResponse:
     question: str
@@ -492,12 +532,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _select_generator() -> TextGenerator:
+    if os.getenv("GEMINI_API_KEY", "").strip():
+        return GeminiGenerator()
+    return OpenAIGenerator()
+
+
 def main() -> int:
     args = parse_args()
     try:
+        generator = _select_generator()
         artifact = generate_actual_answers(
             args.dataset,
             args.corpus_dir,
+            generator=generator,
             top_k=args.top_k,
             progress=lambda message: print(message, flush=True),
         )
