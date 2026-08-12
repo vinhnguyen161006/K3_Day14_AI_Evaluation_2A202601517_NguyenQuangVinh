@@ -25,6 +25,7 @@ The reranking helper is an optional bonus exercise and may remain unimplemented.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -393,8 +394,7 @@ class LLMJudge:
     """
 
     def __init__(self, judge_llm_fn: Callable[[str], str]) -> None:
-        # TODO: store judge_llm_fn
-        pass
+        self.judge_llm_fn = judge_llm_fn
 
     def score_response(
         self,
@@ -426,8 +426,30 @@ class LLMJudge:
                 "reasoning": str,               # raw LLM explanation
             }
         """
-        # TODO
-        raise NotImplementedError("Implement score_response")
+        criteria_lines = "\n".join(
+            f"- {name}: {description}" for name, description in rubric.items()
+        )
+        prompt = (
+            f"Question: {question}\n"
+            f"Answer: {answer}\n"
+            f"Rubric:\n{criteria_lines}\n"
+            "Score each criterion from 0.0 to 1.0 and return JSON "
+            "mapping criterion name to score."
+        )
+
+        raw_response = self.judge_llm_fn(prompt)
+
+        try:
+            scores = json.loads(raw_response)
+            if not isinstance(scores, dict):
+                raise ValueError("Judge response is not a JSON object")
+        except (json.JSONDecodeError, ValueError):
+            scores = {criterion: 0.5 for criterion in rubric}
+
+        return {
+            "scores": scores,
+            "reasoning": raw_response,
+        }
 
     def detect_bias(self, scores_batch: list[dict[str, Any]]) -> dict[str, Any]:
         """
@@ -448,8 +470,29 @@ class LLMJudge:
                 "severity_bias":   bool,
             }
         """
-        # TODO
-        raise NotImplementedError("Implement detect_bias")
+        def avg_score(entry: dict[str, Any]) -> float:
+            scores = entry.get("scores", {})
+            if not scores:
+                return 0.0
+            return sum(scores.values()) / len(scores)
+
+        entry_averages = [avg_score(entry) for entry in scores_batch]
+
+        positional_bias = False
+        if len(entry_averages) > 1:
+            first_avg = entry_averages[0]
+            rest_avg = sum(entry_averages[1:]) / len(entry_averages[1:])
+            positional_bias = first_avg > rest_avg
+
+        overall_avg = (
+            sum(entry_averages) / len(entry_averages) if entry_averages else 0.0
+        )
+
+        return {
+            "positional_bias": positional_bias,
+            "leniency_bias": overall_avg > 0.8,
+            "severity_bias": overall_avg < 0.3,
+        }
 
 
 # ---------------------------------------------------------------------------
